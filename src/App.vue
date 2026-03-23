@@ -231,6 +231,8 @@
 
     </div>
   </div>
+  <!-- Hidden audio element — keeps iOS audio session alive so Bluetooth stays ours -->
+  <audio ref="silentAudioEl" loop style="display:none"></audio>
 </template>
 
 <script setup>
@@ -374,6 +376,69 @@ watch(isPlaying, playing => {
   }
 }, { immediate: true });
 onUnmounted(() => clearInterval(ticker));
+
+// ── Silent audio — keeps iOS audio session alive so BT/CarPlay stays ours ────
+// Technique from MA's own SendspinPlayer.vue: a near-silent looping audio
+// element prevents iOS from handing audio focus back to iTunes when BT connects.
+const silentAudioEl = ref(null);
+
+// 0.1-second silent MP3 as a data URI — tiny, no network request needed
+const SILENT_MP3 = 'data:audio/mpeg;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4LjI5LjEwMAAAAAAAAAAAAAAA/+MwxAAAAAAAAAAAAAAAAAAAAAAASW5mbwAAAA8AAAABAAADQgD///////////////////////////////////////////////////////////8AAAA8TEFNRTMuOTlyAc0AAAAAAAAAABSAJAWuQgAAgAAADUIXHCQ8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/+MwxAADwAABpAAAACAAANIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA//MwxCkAAANIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==';
+
+let silentAudioInterval = null;
+
+function startSilentAudio() {
+  const el = silentAudioEl.value;
+  if (!el || el.src) return;
+  el.src = SILENT_MP3;
+  el.volume = 0.001;
+  el.play().catch(() => {});
+  // Reset every 55 s to avoid the audible click on some devices when loop restarts
+  silentAudioInterval = setInterval(() => {
+    if (el) el.currentTime = 0;
+  }, 55000);
+}
+
+function stopSilentAudio() {
+  clearInterval(silentAudioInterval);
+  silentAudioInterval = null;
+  const el = silentAudioEl.value;
+  if (el) { el.pause(); el.src = ''; }
+}
+
+// Start on first user interaction (iOS requires a gesture to unlock audio)
+function onFirstInteraction() {
+  startSilentAudio();
+  window.removeEventListener('touchstart', onFirstInteraction);
+  window.removeEventListener('click',      onFirstInteraction);
+}
+window.addEventListener('touchstart', onFirstInteraction, { once: true });
+window.addEventListener('click',      onFirstInteraction, { once: true });
+
+// Keep silent audio running while Sendspin is playing, stop when idle
+watch(sendspinPlaying, (playing) => {
+  if (playing) startSilentAudio();
+  // Don't stop on pause — keep the session so BT doesn't switch apps
+});
+
+// ── MediaSession — tells CarPlay / BT display what's playing ─────────────────
+watch([trackName, artist, artUrl], ([title, artistStr, art]) => {
+  if (!('mediaSession' in navigator)) return;
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title:  title  || 'Music Assistant',
+    artist: artistStr || '',
+    artwork: art ? [{ src: art, sizes: '512x512', type: 'image/jpeg' }] : [],
+  });
+});
+
+// Wire car stalk buttons → MA controls
+onMounted(() => {
+  if (!('mediaSession' in navigator)) return;
+  navigator.mediaSession.setActionHandler('play',          () => maApi.value?.playPause(activePlayerId.value));
+  navigator.mediaSession.setActionHandler('pause',         () => maApi.value?.playPause(activePlayerId.value));
+  navigator.mediaSession.setActionHandler('nexttrack',     () => maApi.value?.next(activePlayerId.value));
+  navigator.mediaSession.setActionHandler('previoustrack', () => maApi.value?.previous(activePlayerId.value));
+});
 
 const progressPct = computed(() =>
   duration.value ? Math.min(100, (localElapsed.value / duration.value) * 100) : 0
