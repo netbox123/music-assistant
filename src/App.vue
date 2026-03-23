@@ -204,6 +204,20 @@
               {{ authed ? 'Connected' : connected ? 'Authenticating…' : 'Disconnected' }}
             </span>
           </div>
+          <div class="setting-row setting-row--toggle">
+            <div class="setting-toggle-info">
+              <label class="setting-label">Listen on this device</label>
+              <span class="setting-hint">
+                <span v-if="sendspinEnabled && sendspinConnected" class="status-ok">● Active{{ sendspinPlaying ? ' · Playing' : '' }}</span>
+                <span v-else-if="sendspinEnabled && sendspinError" class="status-err">{{ sendspinError }}</span>
+                <span v-else-if="sendspinEnabled" class="status-warn">Connecting…</span>
+                <span v-else class="setting-hint--muted">Off — enables Sendspin audio streaming</span>
+              </span>
+            </div>
+            <button class="setting-toggle-btn" :class="{ active: sendspinEnabled }" @click="toggleSendspin">
+              <span class="setting-toggle-knob"></span>
+            </button>
+          </div>
           <div class="setting-row" v-if="visiblePlayers.length > 1">
             <label class="setting-label">Active Player</label>
             <select class="setting-input" v-model="selectedPlayerId">
@@ -222,6 +236,7 @@
 <script setup>
 import { ref, shallowRef, computed, watch, onMounted, onUnmounted } from 'vue';
 import { useMusicAssistant } from './composables/useMusicAssistant.js';
+import { startSendspin, stopSendspin, sendspinConnected, sendspinPlaying, sendspinError } from './composables/useSendspin.js';
 import {
   mdiPlay, mdiPause, mdiSkipNext, mdiSkipPrevious,
   mdiShuffle, mdiRepeat, mdiRepeatOnce, mdiSpeaker, mdiMusicNote,
@@ -248,6 +263,21 @@ function saveSettings() {
   localStorage.setItem('ma_url',   settingsUrl.value.trim());
   localStorage.setItem('ma_token', settingsToken.value.trim());
   window.location.reload();
+}
+
+// ── Sendspin (listen on this device) ─────────────────────────────────────────
+const sendspinEnabled = ref(localStorage.getItem('ma_sendspin') === '1');
+
+async function toggleSendspin() {
+  sendspinEnabled.value = !sendspinEnabled.value;
+  localStorage.setItem('ma_sendspin', sendspinEnabled.value ? '1' : '0');
+  if (sendspinEnabled.value) {
+    const url   = localStorage.getItem('ma_url')   || maUrl.value;
+    const token = localStorage.getItem('ma_token') || '';
+    if (url) await startSendspin(url, token);
+  } else {
+    stopSendspin();
+  }
 }
 
 // ── MA instance ───────────────────────────────────────────────────────────────
@@ -280,6 +310,8 @@ onMounted(async () => {
   settingsUrl.value   = settingsUrl.value   || url;
   settingsToken.value = settingsToken.value || token;
   maApi.value         = useMusicAssistant(url, token);
+
+  if (sendspinEnabled.value) startSendspin(url, token);
 });
 
 // ── Player selection ──────────────────────────────────────────────────────────
@@ -1082,6 +1114,50 @@ function switchTab(id) { activeTab.value = id; }
   font-size: 0.8rem;
   color: var(--text-secondary);
 }
-.status-ok  { color: #22c55e; }
-.status-err { color: var(--accent-red); }
+.status-ok   { color: #22c55e; }
+.status-err  { color: var(--accent-red); }
+.status-warn { color: var(--text-muted); }
+.setting-hint--muted { color: var(--text-muted); opacity: 0.6; }
+
+/* ── Sendspin toggle row ── */
+.setting-row--toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.setting-toggle-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.setting-toggle-btn {
+  flex-shrink: 0;
+  width: 46px;
+  height: 26px;
+  border-radius: 13px;
+  border: none;
+  background: var(--border);
+  padding: 3px;
+  cursor: pointer;
+  transition: background 0.2s;
+  position: relative;
+}
+.setting-toggle-btn.active {
+  background: #22c55e;
+}
+.setting-toggle-knob {
+  display: block;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.2s;
+  position: absolute;
+  top: 3px;
+  left: 3px;
+}
+.setting-toggle-btn.active .setting-toggle-knob {
+  transform: translateX(20px);
+}
 </style>

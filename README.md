@@ -12,13 +12,15 @@ A standalone mobile web app for [Music Assistant](https://github.com/music-assis
 - **Browse** — Drilldown file browser starting at your local disk provider. Tap folder icon to navigate, tap folder name to play all contents
 - **Radio** — List of all MA radio stations, tap to play instantly
 - **Settings** — Configure MA server URL and token
+- **Sendspin** — Toggle "Listen on this device" to stream audio directly to the iPhone via the [Sendspin protocol](https://www.music-assistant.io/player-support/sendspin/) — no Bluetooth or AirPlay needed
 
 ## Tech Stack
 
 - Vue 3 (no router, single page)
 - Vite
-- Node.js static file server with image proxy
+- Node.js static file server with image proxy and WebSocket proxy
 - WebSocket connection to Music Assistant server
+- [@sendspin/sendspin-js](https://github.com/Sendspin/sendspin-js) for direct audio streaming
 
 ## Setup
 

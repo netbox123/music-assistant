@@ -2,6 +2,7 @@ import http from 'http';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { createConnection } from 'net';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST = path.join(__dirname, 'dist');
@@ -57,6 +58,49 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(404);
     res.end('Not found');
   }
+});
+
+// WebSocket proxy for Sendspin — tunnels ws://[app]/sendspin?url=ws://[ma]/sendspin
+// This avoids cross-origin/Origin-header rejections from the MA server.
+server.on('upgrade', (req, socket, head) => {
+  const rawPath = req.url.split('?')[0];
+  if (rawPath !== '/sendspin') { socket.destroy(); return; }
+
+  const params = new URLSearchParams(req.url.slice(req.url.indexOf('?') + 1));
+  const target = params.get('url');
+  if (!target || !/^wss?:\/\//.test(target)) { socket.destroy(); return; }
+
+  let u;
+  try { u = new URL(target); } catch { socket.destroy(); return; }
+
+  const port = parseInt(u.port || (u.protocol === 'wss:' ? '443' : '80'));
+
+  const proxy = createConnection(port, u.hostname, () => {
+    // Forward the HTTP upgrade request to MA, spoofing Origin to match MA's own frontend
+    const maOrigin = `${u.protocol === 'wss:' ? 'https' : 'http'}://${u.host}`;
+    let headers  = `GET ${u.pathname} HTTP/1.1\r\n`;
+    headers += `Host: ${u.host}\r\n`;
+    headers += `Origin: ${maOrigin}\r\n`;
+    headers += `Upgrade: websocket\r\n`;
+    headers += `Connection: Upgrade\r\n`;
+    headers += `Sec-WebSocket-Key: ${req.headers['sec-websocket-key']}\r\n`;
+    headers += `Sec-WebSocket-Version: ${req.headers['sec-websocket-version'] || '13'}\r\n`;
+    if (req.headers['sec-websocket-extensions'])
+      headers += `Sec-WebSocket-Extensions: ${req.headers['sec-websocket-extensions']}\r\n`;
+    headers += '\r\n';
+    proxy.write(headers);
+    if (head && head.length) proxy.write(head);
+  });
+
+  proxy.on('data',  (d) => socket.write(d));
+  socket.on('data', (d) => proxy.write(d));
+  socket.on('end',  ()  => proxy.end());
+  proxy.on('end',   ()  => socket.end());
+  socket.on('error', () => proxy.destroy());
+  proxy.on('error',  (e) => {
+    console.error('[sendspin-proxy] error:', e.message);
+    socket.destroy();
+  });
 });
 
 server.listen(PORT, () => console.log(`[MusicAssistant] Running at http://localhost:${PORT}`));
