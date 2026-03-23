@@ -249,17 +249,29 @@ export function stopSendspin() {
 }
 
 // Auto-reconnect when network comes back (WiFi → cellular or vice versa)
+// Retries up to 5 times with increasing delays to let the new network stabilise.
+async function reconnectWithRetry(attempt = 1) {
+  if (!_lastUrl) return;
+  if (sendspinConnected.value) return;
+  if (localStorage.getItem('ma_sendspin') !== '1') return;
+
+  sendspinError.value = `Reconnecting… (attempt ${attempt})`;
+  await startSendspin(_lastUrl, _lastToken);
+
+  if (!sendspinConnected.value && attempt < 5) {
+    const delay = attempt * 3000;   // 3s, 6s, 9s, 12s
+    _reconnectTimer = setTimeout(() => reconnectWithRetry(attempt + 1), delay);
+  }
+}
+
 function onNetworkOnline() {
-  if (!_lastUrl) return;                      // Sendspin was never started
-  if (sendspinConnected.value) return;        // Already connected, nothing to do
-  if (localStorage.getItem('ma_sendspin') !== '1') return;  // User has it toggled off
+  if (!_lastUrl) return;
+  if (sendspinConnected.value) return;
+  if (localStorage.getItem('ma_sendspin') !== '1') return;
 
   clearTimeout(_reconnectTimer);
-  // Small delay — let the new network stabilise before connecting
-  _reconnectTimer = setTimeout(() => {
-    sendspinError.value = '';
-    startSendspin(_lastUrl, _lastToken);
-  }, 2000);
+  // Initial delay — let the new network interface settle
+  _reconnectTimer = setTimeout(() => reconnectWithRetry(1), 3000);
 }
 
 window.addEventListener('online', onNetworkOnline);
