@@ -188,8 +188,14 @@ function uninstallInterceptor() {
 }
 
 // ── Public API ─────────────────────────────────────────────────────────────────
+let _lastUrl   = '';
+let _lastToken = '';
+let _reconnectTimer = null;
+
 export async function startSendspin(maUrl, maToken) {
   stopSendspin();
+  _lastUrl   = maUrl;
+  _lastToken = maToken;
   sendspinError.value     = '';
   sendspinConnected.value = false;
 
@@ -231,6 +237,7 @@ export async function startSendspin(maUrl, maToken) {
 }
 
 export function stopSendspin() {
+  clearTimeout(_reconnectTimer);
   if (player) {
     try { player.disconnect('user_request'); } catch { /* ignore */ }
     player = null;
@@ -240,3 +247,19 @@ export function stopSendspin() {
   sendspinConnected.value = false;
   sendspinPlaying.value   = false;
 }
+
+// Auto-reconnect when network comes back (WiFi → cellular or vice versa)
+function onNetworkOnline() {
+  if (!_lastUrl) return;                      // Sendspin was never started
+  if (sendspinConnected.value) return;        // Already connected, nothing to do
+  if (localStorage.getItem('ma_sendspin') !== '1') return;  // User has it toggled off
+
+  clearTimeout(_reconnectTimer);
+  // Small delay — let the new network stabilise before connecting
+  _reconnectTimer = setTimeout(() => {
+    sendspinError.value = '';
+    startSendspin(_lastUrl, _lastToken);
+  }, 2000);
+}
+
+window.addEventListener('online', onNetworkOnline);
