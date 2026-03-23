@@ -27,24 +27,40 @@ function getClientId() {
 //   3. Server replies with any message (auth ack — discarded)
 //   4. Sendspin protocol begins (client/hello → server/hello → …)
 //
-function prepareSession(maUrl, maToken) {
+// Remember the Caddy/remote host whenever the app is loaded via HTTPS so we can
+// fall back to it when the local network is unreachable (e.g. car WiFi).
+const REMOTE_HOST_KEY = 'ma_remote_host';
+if (window.location.protocol === 'https:') {
+  localStorage.setItem(REMOTE_HOST_KEY, window.location.host);
+}
+
+function buildSessionUrl(maUrl) {
+  const isHttps  = window.location.protocol === 'https:';
+  const remote   = localStorage.getItem(REMOTE_HOST_KEY);
+
+  if (isHttps) {
+    // Caddy HTTPS: /ma-proxy/* is auth-exempt and proxied directly to MA
+    return `wss://${window.location.host}/ma-proxy/sendspin`;
+  }
+  // HTTP (local): serve.js WebSocket proxy
+  let maWsUrl;
+  try {
+    const u = new URL(maUrl);
+    maWsUrl = `ws://${u.host}/sendspin`;
+  } catch {
+    maWsUrl = maUrl.replace(/^http/, 'ws').replace(/\/$/, '') + '/sendspin';
+  }
+  return `ws://${window.location.host}/sendspin?url=${encodeURIComponent(maWsUrl)}`;
+}
+
+function buildRemoteFallbackUrl() {
+  const remote = localStorage.getItem(REMOTE_HOST_KEY);
+  return remote ? `wss://${remote}/ma-proxy/sendspin` : null;
+}
+
+function prepareSession(maUrl, maToken, urlOverride = null) {
   return new Promise((resolve, reject) => {
-    // HTTPS (via Caddy): /ma-proxy/* is already auth-exempt and proxied to MA port 8095
-    // HTTP  (direct):    serve.js WebSocket proxy at /sendspin?url=... (spoofs Origin header)
-    let url;
-    const isHttps = window.location.protocol === 'https:';
-    if (isHttps) {
-      url = `wss://${window.location.host}/ma-proxy/sendspin`;
-    } else {
-      let maWsUrl;
-      try {
-        const u = new URL(maUrl);
-        maWsUrl = `ws://${u.host}/sendspin`;
-      } catch {
-        maWsUrl = maUrl.replace(/^http/, 'ws').replace(/\/$/, '') + '/sendspin';
-      }
-      url = `ws://${window.location.host}/sendspin?url=${encodeURIComponent(maWsUrl)}`;
-    }
+    const url = urlOverride ?? buildSessionUrl(maUrl);
 
     let ws;
     try {
@@ -202,14 +218,25 @@ export async function startSendspin(maUrl, maToken) {
   // Install interceptor first (before any WebSocket calls)
   installInterceptor();
 
-  // Prepare authenticated session
+  // Prepare authenticated session — try local path first, then remote fallback
   let ws;
   try {
     ws = await prepareSession(maUrl, maToken);
   } catch (e) {
-    sendspinError.value = `Auth failed: ${e.message}`;
-    uninstallInterceptor();
-    return;
+    const fallback = buildRemoteFallbackUrl();
+    if (fallback && fallback !== buildSessionUrl(maUrl)) {
+      try {
+        ws = await prepareSession(maUrl, maToken, fallback);
+      } catch (e2) {
+        sendspinError.value = `Auth failed: ${e2.message}`;
+        uninstallInterceptor();
+        return;
+      }
+    } else {
+      sendspinError.value = `Auth failed: ${e.message}`;
+      uninstallInterceptor();
+      return;
+    }
   }
 
   pendingBridge = makeBridge(ws);
