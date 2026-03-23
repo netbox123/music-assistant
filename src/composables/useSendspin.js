@@ -1,9 +1,56 @@
-import { ref } from 'vue';
+import { ref, watch } from 'vue';
 import { SendspinPlayer } from '@sendspin/sendspin-js';
 
 let player        = null;
 let pendingBridge = null;   // Authenticated WS, waiting for sendspin-js to pick it up
 let OriginalWS    = null;
+
+// ── iOS background throttle prevention ────────────────────────────────────────
+// When the iPhone screen turns off while CarPlay is active, iOS throttles
+// setTimeout/setInterval in Safari.  Two complementary techniques prevent this:
+//
+//   1. Running AudioContext  — marks the page as an active audio producer;
+//      iOS will not throttle JS timers for pages with a running AudioContext.
+//
+//   2. Screen Wake Lock      — keeps the screen on entirely, which prevents
+//      iOS from ever entering the throttled background state.
+//      In a car on USB power this is acceptable and the most reliable fix.
+//
+// Both must be initiated during a user-gesture call (the Sendspin toggle tap).
+let _keepAliveCtx = null;
+let _wakeLock     = null;
+
+export function primeAudioContext() {
+  // 1. AudioContext keep-alive
+  if (_keepAliveCtx?.state !== 'running') {
+    try {
+      if (!_keepAliveCtx) {
+        _keepAliveCtx = new AudioContext();
+        const gain = _keepAliveCtx.createGain();
+        gain.gain.value = 0;
+        gain.connect(_keepAliveCtx.destination);
+        const src = _keepAliveCtx.createConstantSource();
+        src.connect(gain);
+        src.start();
+      } else {
+        _keepAliveCtx.resume();
+      }
+    } catch { /* non-critical */ }
+  }
+
+  // 2. Screen Wake Lock — re-acquire whenever it's released (e.g. tab hidden/shown)
+  if ('wakeLock' in navigator) {
+    navigator.wakeLock.request('screen')
+      .then(lock => {
+        _wakeLock = lock;
+        _wakeLock.addEventListener('release', () => {
+          // Auto re-acquire when the page becomes visible again
+          if (localStorage.getItem('ma_sendspin') === '1') primeAudioContext();
+        });
+      })
+      .catch(() => { /* denied or not supported — non-critical */ });
+  }
+}
 
 export const sendspinConnected = ref(false);
 export const sendspinPlaying   = ref(false);
@@ -36,7 +83,6 @@ if (window.location.protocol === 'https:') {
 
 function buildSessionUrl(maUrl) {
   const isHttps  = window.location.protocol === 'https:';
-  const remote   = localStorage.getItem(REMOTE_HOST_KEY);
 
   if (isHttps) {
     // Caddy HTTPS: /ma-proxy/* is auth-exempt and proxied directly to MA
@@ -204,14 +250,20 @@ function uninstallInterceptor() {
 }
 
 // ── Public API ─────────────────────────────────────────────────────────────────
-let _lastUrl   = '';
-let _lastToken = '';
+let _lastUrl        = '';
+let _lastToken      = '';
+let _lastAudioEl    = null;
 let _reconnectTimer = null;
+let _userStopped    = false;  // true when user explicitly toggled Sendspin off
+let _starting       = false;  // true while startSendspin() is running
 
-export async function startSendspin(maUrl, maToken) {
+export async function startSendspin(maUrl, maToken, audioElement = null) {
+  _userStopped  = false;
+  _starting     = true;
   stopSendspin();
-  _lastUrl   = maUrl;
-  _lastToken = maToken;
+  _lastUrl      = maUrl;
+  _lastToken    = maToken;
+  _lastAudioEl  = audioElement;
   sendspinError.value     = '';
   sendspinConnected.value = false;
 
@@ -230,11 +282,13 @@ export async function startSendspin(maUrl, maToken) {
       } catch (e2) {
         sendspinError.value = `Auth failed: ${e2.message}`;
         uninstallInterceptor();
+        _starting = false;
         return;
       }
     } else {
       sendspinError.value = `Auth failed: ${e.message}`;
       uninstallInterceptor();
+      _starting = false;
       return;
     }
   }
@@ -248,6 +302,7 @@ export async function startSendspin(maUrl, maToken) {
       baseUrl:        'http://sendspin.local',
       clientName:     'MA Mobile',
       correctionMode: 'quality-local',
+      ...(audioElement ? { audioElement } : {}),
       onStateChange(state) {
         sendspinConnected.value = player?.isConnected ?? false;
         sendspinPlaying.value   = state.isPlaying;
@@ -261,9 +316,12 @@ export async function startSendspin(maUrl, maToken) {
     sendspinError.value     = `Sendspin error: ${e?.message || e?.type || String(e)}`;
     sendspinConnected.value = false;
   }
+
+  _starting = false;
 }
 
 export function stopSendspin() {
+  _userStopped = true;
   clearTimeout(_reconnectTimer);
   if (player) {
     try { player.disconnect('user_request'); } catch { /* ignore */ }
@@ -273,32 +331,54 @@ export function stopSendspin() {
   uninstallInterceptor();
   sendspinConnected.value = false;
   sendspinPlaying.value   = false;
+  // Release keep-alive resources when Sendspin is fully stopped
+  if (_wakeLock) {
+    try { _wakeLock.release(); } catch {}
+    _wakeLock = null;
+  }
+  if (_keepAliveCtx) {
+    try { _keepAliveCtx.close(); } catch {}
+    _keepAliveCtx = null;
+  }
 }
 
-// Auto-reconnect when network comes back (WiFi → cellular or vice versa)
-// Retries up to 5 times with increasing delays to let the new network stabilise.
+// ── Auto-reconnect on unexpected disconnect ────────────────────────────────────
+// This is the single reconnect path for ALL causes: network drop, CarPlay
+// connect/disconnect, BT route change, WS timeout.  We react to the connection
+// going false rather than trying to predict the cause.
+watch(sendspinConnected, (connected) => {
+  if (connected) return;
+  if (_starting) return;       // normal teardown during startSendspin — ignore
+  if (_userStopped) return;    // user explicitly turned Sendspin off — don't reconnect
+  if (!_lastUrl) return;
+  if (localStorage.getItem('ma_sendspin') !== '1') return;
+
+  // Small delay so the new route/network has a moment to settle before we dial in
+  clearTimeout(_reconnectTimer);
+  _reconnectTimer = setTimeout(() => reconnectWithRetry(1), 3000);
+});
+
 async function reconnectWithRetry(attempt = 1) {
   if (!_lastUrl) return;
+  if (_userStopped) return;
   if (sendspinConnected.value) return;
   if (localStorage.getItem('ma_sendspin') !== '1') return;
 
   sendspinError.value = `Reconnecting… (attempt ${attempt})`;
-  await startSendspin(_lastUrl, _lastToken);
+  await startSendspin(_lastUrl, _lastToken, _lastAudioEl);
 
   if (!sendspinConnected.value && attempt < 5) {
-    const delay = attempt * 3000;   // 3s, 6s, 9s, 12s
+    const delay = attempt * 3000;   // 3 s, 6 s, 9 s, 12 s
     _reconnectTimer = setTimeout(() => reconnectWithRetry(attempt + 1), delay);
   }
 }
 
-function onNetworkOnline() {
+// ── Reconnect when the device comes back online (WiFi → cellular, etc.) ────────
+window.addEventListener('online', () => {
   if (!_lastUrl) return;
+  if (_userStopped) return;
   if (sendspinConnected.value) return;
   if (localStorage.getItem('ma_sendspin') !== '1') return;
-
   clearTimeout(_reconnectTimer);
-  // Initial delay — let the new network interface settle
   _reconnectTimer = setTimeout(() => reconnectWithRetry(1), 3000);
-}
-
-window.addEventListener('online', onNetworkOnline);
+});
