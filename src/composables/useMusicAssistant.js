@@ -46,6 +46,9 @@ export function useMusicAssistant(maUrl, maToken) {
   async function search(query, limit = 25) {
     return send('music/search', { search_query: query, limit });
   }
+  async function playQueueItem(queueId, index) {
+    return send('player_queues/play_index', { queue_id: queueId, index });
+  }
   async function getRadioStations(limit = 200, offset = 0) {
     return send('music/radios/library_items', { limit, offset });
   }
@@ -165,7 +168,7 @@ export function useMusicAssistant(maUrl, maToken) {
     players:   readonly(players),
     queues:    readonly(queues),
     error:     readonly(error),
-    playPause, next, previous, setVolume, setShuffle, setRepeat, seek, getQueueItems, search, getRadioStations, playMedia, browse,
+    playPause, next, previous, setVolume, setShuffle, setRepeat, seek, getQueueItems, search, getRadioStations, playMedia, browse, playQueueItem,
   };
 
   instances.set(key, api);

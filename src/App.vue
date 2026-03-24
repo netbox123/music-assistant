@@ -82,6 +82,7 @@
             :ref="el => { if (item.queue_item_id === activeQueue?.current_item?.queue_item_id) currentQueueEl = el }"
             class="queue-row"
             :class="{ 'queue-row--current': item.queue_item_id === activeQueue?.current_item?.queue_item_id }"
+            @click="maApi.value?.playQueueItem(activePlayerId.value, idx); switchTab('home')"
           >
             <span class="queue-idx">{{ idx + 1 }}</span>
             <img v-if="queueItemArt(item)" :src="queueItemArt(item)" class="queue-art" alt="" />
