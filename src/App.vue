@@ -344,23 +344,32 @@ const activeQueue    = computed(() => queues.value[activePlayerId.value]);
 const isPlaying      = computed(() => activePlayer.value?.state === 'playing');
 
 // ── Track info ────────────────────────────────────────────────────────────────
-const currentTrack = computed(() =>
-  activeQueue.value?.current_item?.media_item ?? activeQueue.value?.current_item
-);
+const currentItem  = computed(() => activeQueue.value?.current_item);
+const currentTrack = computed(() => currentItem.value?.media_item ?? currentItem.value);
+const streamTitle  = computed(() => currentItem.value?.streamdetails?.stream_title ?? '');
 const currentMedia = computed(() => activePlayer.value?.current_media);
 
-const trackName = computed(() =>
-  currentTrack.value?.name || currentMedia.value?.title || '—'
-);
+const trackName = computed(() => {
+  if (streamTitle.value) {
+    const parts = streamTitle.value.split(' - ');
+    return parts.length > 1 ? parts.slice(1).join(' - ') : streamTitle.value;
+  }
+  return currentTrack.value?.name || currentMedia.value?.title || '—';
+});
 const artist = computed(() => {
+  if (streamTitle.value) {
+    const parts = streamTitle.value.split(' - ');
+    return parts.length > 1 ? parts[0] : '';
+  }
   const t = currentTrack.value;
   if (t?.artists?.length) return t.artists.map(a => a.name).join(', ');
   if (t?.artist_str) return t.artist_str;
   return currentMedia.value?.artist ?? '';
 });
-const album = computed(() =>
-  currentTrack.value?.album?.name || currentMedia.value?.album || ''
-);
+const album = computed(() => {
+  if (streamTitle.value) return currentTrack.value?.name ?? '';
+  return currentTrack.value?.album?.name || currentMedia.value?.album || '';
+});
 const elapsed  = computed(() => activeQueue.value?.elapsed_time ?? 0);
 const duration = computed(() =>
   currentTrack.value?.duration ?? activeQueue.value?.current_item?.duration ?? 0
